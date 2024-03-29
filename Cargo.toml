@@ -1,0 +1,17 @@
+[package]
+name = "mdbook-shiftinclude"
+version = "0.1.0"
+authors = ["David Drysdale <dmd@lurklurk.org>"]
+edition = "2021"
+license = "MPL-2.0"
+description = "mdbook preprocessor for file inclusion with shift"
+repository = "https://github.com/daviddrysdale/mdbook-shiftinclude"
+keywords = ["mdbook", "preprocessor"]
+categories = ["text-processing"]
+
+[dependencies]
+clap = "2.*"
+env_logger = "^0.11.1"
+log = "^0.4.17"
+mdbook = "^0.4.37"
+serde_json = "1.*"
