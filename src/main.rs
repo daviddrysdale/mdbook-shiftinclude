@@ -9,10 +9,6 @@ use mdbook::{
     book::{Book, BookItem},
     errors::{Error, Result},
     preprocess::{CmdPreprocessor, Preprocessor, PreprocessorContext},
-    utils::{
-        take_anchored_lines, take_lines, take_rustdoc_include_anchored_lines,
-        take_rustdoc_include_lines,
-    },
 };
 use once_cell::sync::Lazy;
 use regex::{CaptureMatches, Captures, Regex};
@@ -21,6 +17,12 @@ use std::{
     ops::{Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeTo},
     path::{Path, PathBuf},
     process,
+};
+
+mod string;
+use string::{
+    take_anchored_lines, take_lines, take_rustdoc_include_anchored_lines,
+    take_rustdoc_include_lines,
 };
 
 const ESCAPE_CHAR: char = '\\';
