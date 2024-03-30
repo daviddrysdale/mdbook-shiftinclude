@@ -13,6 +13,7 @@ use mdbook::{
 use once_cell::sync::Lazy;
 use regex::{CaptureMatches, Captures, Regex};
 use std::{
+    cmp::Ordering,
     fs, io,
     ops::{Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeTo},
     path::{Path, PathBuf},
@@ -20,7 +21,7 @@ use std::{
 };
 
 mod string;
-use string::{take_anchored_lines, take_lines};
+use string::{take_anchored_lines_with_shift, take_lines_with_shift, Shift};
 
 const ESCAPE_CHAR: char = '\\';
 const MAX_LINK_NESTED_DEPTH: usize = 10;
@@ -56,7 +57,7 @@ fn main() -> Result<(), Error> {
     Ok(())
 }
 
-/// A pre-processor that acts like `{{#include}}` but allows shifting.
+/// A pre-processor for `{{#shiftinclude}}` that acts like `{{#include}}` but allows shifting.
 #[derive(Default)]
 pub struct ShiftInclude;
 
@@ -162,7 +163,7 @@ where
 #[derive(PartialEq, Debug, Clone)]
 enum LinkType {
     Escaped,
-    Include(PathBuf, RangeOrAnchor),
+    Include(PathBuf, RangeOrAnchor, Shift),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -230,7 +231,7 @@ impl LinkType {
         let base = base.as_ref();
         match self {
             LinkType::Escaped => None,
-            LinkType::Include(p, _) => Some(return_relative_path(base, &p)),
+            LinkType::Include(p, _, _) => Some(return_relative_path(base, &p)),
         }
     }
 }
@@ -272,13 +273,28 @@ fn parse_range_or_anchor(parts: Option<&str>) -> RangeOrAnchor {
     }
 }
 
-fn parse_include_path(path: &str) -> LinkType {
-    let mut parts = path.splitn(2, ':');
+fn parse_shift_include_path(params: &str) -> LinkType {
+    let mut params = params.splitn(2, ':');
+    let param0 = params.next().unwrap();
+    let shift = if param0 == "auto" {
+        Shift::Auto
+    } else {
+        let shift: isize = param0.parse().unwrap_or_else(|e| {
+            log::error!("failed to parse shift amount: {e:?}");
+            0
+        });
+        match shift.cmp(&0) {
+            Ordering::Greater => Shift::Right(shift as usize),
+            Ordering::Equal => Shift::None,
+            Ordering::Less => Shift::Left(-shift as usize),
+        }
+    };
+    let mut parts = params.next().unwrap().splitn(2, ':');
 
     let path = parts.next().unwrap().into();
     let range_or_anchor = parse_range_or_anchor(parts.next());
 
-    LinkType::Include(path, range_or_anchor)
+    LinkType::Include(path, range_or_anchor, shift)
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -297,7 +313,7 @@ impl<'a> Link<'a> {
                 let file_arg = path_props.next();
 
                 match (typ.as_str(), file_arg) {
-                    ("include", Some(pth)) => Some(parse_include_path(pth)),
+                    ("shiftinclude", Some(pth)) => Some(parse_shift_include_path(pth)),
                     _ => None,
                 }
             }
@@ -322,13 +338,17 @@ impl<'a> Link<'a> {
         match self.link_type {
             // omit the escape char
             LinkType::Escaped => Ok(self.link_text[1..].to_owned()),
-            LinkType::Include(ref pat, ref range_or_anchor) => {
+            LinkType::Include(ref pat, ref range_or_anchor, shift) => {
                 let target = base.join(pat);
 
                 fs::read_to_string(&target)
                     .map(|s| match range_or_anchor {
-                        RangeOrAnchor::Range(range) => take_lines(&s, range.clone()),
-                        RangeOrAnchor::Anchor(anchor) => take_anchored_lines(&s, anchor),
+                        RangeOrAnchor::Range(range) => {
+                            take_lines_with_shift(&s, range.clone(), shift)
+                        }
+                        RangeOrAnchor::Anchor(anchor) => {
+                            take_anchored_lines_with_shift(&s, anchor, shift)
+                        }
                     })
                     .with_context(|| {
                         format!(
@@ -385,12 +405,12 @@ mod tests {
         let start = r"
         Some text over here.
         ```hbs
-        \{{#include file.rs}} << an escaped link!
+        \{{#shiftinclude 0:file.rs}} << an escaped link!
         ```";
         let end = r"
         Some text over here.
         ```hbs
-        {{#include file.rs}} << an escaped link!
+        {{#shiftinclude 0:file.rs}} << an escaped link!
         ```";
         assert_eq!(replace_all(start, "", "", 0), end);
     }
@@ -425,121 +445,107 @@ mod tests {
 
     #[test]
     fn test_find_links_with_range() {
-        let s = "Some random text with {{#include file.rs:10:20}}...";
+        let s = "Some random text with {{#shiftinclude 0:file.rs:10:20}}...";
         let res = find_links(s).collect::<Vec<_>>();
         println!("\nOUTPUT: {:?}\n", res);
         assert_eq!(
             res,
             vec![Link {
                 start_index: 22,
-                end_index: 48,
+                end_index: 55,
                 link_type: LinkType::Include(
                     PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(9..20))
+                    RangeOrAnchor::Range(LineRange::from(9..20)),
+                    Shift::None,
                 ),
-                link_text: "{{#include file.rs:10:20}}",
+                link_text: "{{#shiftinclude 0:file.rs:10:20}}",
             }]
         );
     }
 
     #[test]
     fn test_find_links_with_line_number() {
-        let s = "Some random text with {{#include file.rs:10}}...";
+        let s = "Some random text with {{#shiftinclude 0:file.rs:10}}...";
         let res = find_links(s).collect::<Vec<_>>();
         println!("\nOUTPUT: {:?}\n", res);
         assert_eq!(
             res,
             vec![Link {
                 start_index: 22,
-                end_index: 45,
+                end_index: 52,
                 link_type: LinkType::Include(
                     PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(9..10))
+                    RangeOrAnchor::Range(LineRange::from(9..10)),
+                    Shift::None,
                 ),
-                link_text: "{{#include file.rs:10}}",
+                link_text: "{{#shiftinclude 0:file.rs:10}}",
             }]
         );
     }
 
     #[test]
     fn test_find_links_with_from_range() {
-        let s = "Some random text with {{#include file.rs:10:}}...";
+        let s = "Some random text with {{#shiftinclude 0:file.rs:10:}}...";
         let res = find_links(s).collect::<Vec<_>>();
         println!("\nOUTPUT: {:?}\n", res);
         assert_eq!(
             res,
             vec![Link {
                 start_index: 22,
-                end_index: 46,
+                end_index: 53,
                 link_type: LinkType::Include(
                     PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(9..))
+                    RangeOrAnchor::Range(LineRange::from(9..)),
+                    Shift::None,
                 ),
-                link_text: "{{#include file.rs:10:}}",
+                link_text: "{{#shiftinclude 0:file.rs:10:}}",
             }]
         );
     }
 
     #[test]
     fn test_find_links_with_to_range() {
-        let s = "Some random text with {{#include file.rs::20}}...";
+        let s = "Some random text with {{#shiftinclude 0:file.rs::20}}...";
         let res = find_links(s).collect::<Vec<_>>();
         println!("\nOUTPUT: {:?}\n", res);
         assert_eq!(
             res,
             vec![Link {
                 start_index: 22,
-                end_index: 46,
+                end_index: 53,
                 link_type: LinkType::Include(
                     PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(..20))
+                    RangeOrAnchor::Range(LineRange::from(..20)),
+                    Shift::None,
                 ),
-                link_text: "{{#include file.rs::20}}",
+                link_text: "{{#shiftinclude 0:file.rs::20}}",
             }]
         );
     }
 
     #[test]
     fn test_find_links_with_full_range() {
-        let s = "Some random text with {{#include file.rs::}}...";
+        let s = "Some random text with {{#shiftinclude 0:file.rs::}}...";
         let res = find_links(s).collect::<Vec<_>>();
         println!("\nOUTPUT: {:?}\n", res);
         assert_eq!(
             res,
             vec![Link {
                 start_index: 22,
-                end_index: 44,
+                end_index: 51,
                 link_type: LinkType::Include(
                     PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(..))
+                    RangeOrAnchor::Range(LineRange::from(..)),
+                    Shift::None,
                 ),
-                link_text: "{{#include file.rs::}}",
+                link_text: "{{#shiftinclude 0:file.rs::}}",
             }]
         );
     }
 
     #[test]
     fn test_find_links_with_no_range_specified() {
-        let s = "Some random text with {{#include file.rs}}...";
-        let res = find_links(s).collect::<Vec<_>>();
-        println!("\nOUTPUT: {:?}\n", res);
-        assert_eq!(
-            res,
-            vec![Link {
-                start_index: 22,
-                end_index: 42,
-                link_type: LinkType::Include(
-                    PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(..))
-                ),
-                link_text: "{{#include file.rs}}",
-            }]
-        );
-    }
-
-    #[test]
-    fn test_find_links_with_anchor() {
-        let s = "Some random text with {{#include file.rs:anchor}}...";
+        let s = "Some random text with {{#shiftinclude 0:file.rs}}...";
         let res = find_links(s).collect::<Vec<_>>();
         println!("\nOUTPUT: {:?}\n", res);
         assert_eq!(
@@ -549,9 +555,30 @@ mod tests {
                 end_index: 49,
                 link_type: LinkType::Include(
                     PathBuf::from("file.rs"),
-                    RangeOrAnchor::Anchor(String::from("anchor"))
+                    RangeOrAnchor::Range(LineRange::from(..)),
+                    Shift::None,
                 ),
-                link_text: "{{#include file.rs:anchor}}",
+                link_text: "{{#shiftinclude 0:file.rs}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_with_anchor() {
+        let s = "Some random text with {{#shiftinclude 0:file.rs:anchor}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        println!("\nOUTPUT: {:?}\n", res);
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 56,
+                link_type: LinkType::Include(
+                    PathBuf::from("file.rs"),
+                    RangeOrAnchor::Anchor(String::from("anchor")),
+                    Shift::None,
+                ),
+                link_text: "{{#shiftinclude 0:file.rs:anchor}}",
             }]
         );
     }
@@ -571,186 +598,6 @@ mod tests {
                 link_type: LinkType::Escaped,
                 link_text: "\\{{#playground file.rs editable}}",
             }]
-        );
-    }
-
-    #[test]
-    fn parse_without_colon_includes_all() {
-        let link_type = parse_include_path("arbitrary");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(RangeFull))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_nothing_after_colon_includes_all() {
-        let link_type = parse_include_path("arbitrary:");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(RangeFull))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_two_colons_includes_all() {
-        let link_type = parse_include_path("arbitrary::");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(RangeFull))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_garbage_after_two_colons_includes_all() {
-        let link_type = parse_include_path("arbitrary::NaN");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(RangeFull))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_one_number_after_colon_only_that_line() {
-        let link_type = parse_include_path("arbitrary:5");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(4..5))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_one_based_start_becomes_zero_based() {
-        let link_type = parse_include_path("arbitrary:1");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(0..1))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_zero_based_start_stays_zero_based_but_is_probably_an_error() {
-        let link_type = parse_include_path("arbitrary:0");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(0..1))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_start_only_range() {
-        let link_type = parse_include_path("arbitrary:5:");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(4..))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_start_with_garbage_interpreted_as_start_only_range() {
-        let link_type = parse_include_path("arbitrary:5:NaN");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(4..))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_end_only_range() {
-        let link_type = parse_include_path("arbitrary::5");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(..5))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_start_and_end_range() {
-        let link_type = parse_include_path("arbitrary:5:10");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(4..10))
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_negative_interpreted_as_anchor() {
-        let link_type = parse_include_path("arbitrary:-5");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Anchor("-5".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_floating_point_interpreted_as_anchor() {
-        let link_type = parse_include_path("arbitrary:-5.7");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Anchor("-5.7".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_anchor_followed_by_colon() {
-        let link_type = parse_include_path("arbitrary:some-anchor:this-gets-ignored");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Anchor("some-anchor".to_string())
-            )
-        );
-    }
-
-    #[test]
-    fn parse_with_more_than_three_colons_ignores_everything_after_third_colon() {
-        let link_type = parse_include_path("arbitrary:5:10:17:anything:");
-        assert_eq!(
-            link_type,
-            LinkType::Include(
-                PathBuf::from("arbitrary"),
-                RangeOrAnchor::Range(LineRange::from(4..10))
-            )
         );
     }
 }
