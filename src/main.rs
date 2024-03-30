@@ -20,10 +20,7 @@ use std::{
 };
 
 mod string;
-use string::{
-    take_anchored_lines, take_lines, take_rustdoc_include_anchored_lines,
-    take_rustdoc_include_lines,
-};
+use string::{take_anchored_lines, take_lines};
 
 const ESCAPE_CHAR: char = '\\';
 const MAX_LINK_NESTED_DEPTH: usize = 10;
@@ -104,9 +101,7 @@ impl Preprocessor for ShiftInclude {
                         .map(|dir| src_dir.join(dir))
                         .expect("All book items have a parent");
 
-                    let mut chapter_title = ch.name.clone();
-                    let content =
-                        replace_all(&ch.content, base, chapter_path, 0, &mut chapter_title);
+                    let content = replace_all(&ch.content, base, chapter_path, 0);
                     ch.content = content;
                 }
             }
@@ -115,13 +110,7 @@ impl Preprocessor for ShiftInclude {
     }
 }
 
-fn replace_all<P1, P2>(
-    s: &str,
-    path: P1,
-    source: P2,
-    depth: usize,
-    chapter_title: &mut String,
-) -> String
+fn replace_all<P1, P2>(s: &str, path: P1, source: P2, depth: usize) -> String
 where
     P1: AsRef<Path>,
     P2: AsRef<Path>,
@@ -137,17 +126,11 @@ where
     for link in find_links(s) {
         replaced.push_str(&s[previous_end_index..link.start_index]);
 
-        match link.render_with_path(path, chapter_title) {
+        match link.render_with_path(path) {
             Ok(new_content) => {
                 if depth < MAX_LINK_NESTED_DEPTH {
                     if let Some(rel_path) = link.link_type.relative_path(path) {
-                        replaced.push_str(&replace_all(
-                            &new_content,
-                            rel_path,
-                            source,
-                            depth + 1,
-                            chapter_title,
-                        ));
+                        replaced.push_str(&replace_all(&new_content, rel_path, source, depth + 1));
                     } else {
                         replaced.push_str(&new_content);
                     }
@@ -177,12 +160,9 @@ where
 }
 
 #[derive(PartialEq, Debug, Clone)]
-enum LinkType<'a> {
+enum LinkType {
     Escaped,
     Include(PathBuf, RangeOrAnchor),
-    Playground(PathBuf, Vec<&'a str>),
-    RustdocInclude(PathBuf, RangeOrAnchor),
-    Title(&'a str),
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -245,15 +225,12 @@ impl From<RangeFull> for LineRange {
     }
 }
 
-impl<'a> LinkType<'a> {
+impl LinkType {
     fn relative_path<P: AsRef<Path>>(self, base: P) -> Option<PathBuf> {
         let base = base.as_ref();
         match self {
             LinkType::Escaped => None,
             LinkType::Include(p, _) => Some(return_relative_path(base, &p)),
-            LinkType::Playground(p, _) => Some(return_relative_path(base, &p)),
-            LinkType::RustdocInclude(p, _) => Some(return_relative_path(base, &p)),
-            LinkType::Title(_) => None,
         }
     }
 }
@@ -295,7 +272,7 @@ fn parse_range_or_anchor(parts: Option<&str>) -> RangeOrAnchor {
     }
 }
 
-fn parse_include_path(path: &str) -> LinkType<'static> {
+fn parse_include_path(path: &str) -> LinkType {
     let mut parts = path.splitn(2, ':');
 
     let path = parts.next().unwrap().into();
@@ -304,46 +281,23 @@ fn parse_include_path(path: &str) -> LinkType<'static> {
     LinkType::Include(path, range_or_anchor)
 }
 
-fn parse_rustdoc_include_path(path: &str) -> LinkType<'static> {
-    let mut parts = path.splitn(2, ':');
-
-    let path = parts.next().unwrap().into();
-    let range_or_anchor = parse_range_or_anchor(parts.next());
-
-    LinkType::RustdocInclude(path, range_or_anchor)
-}
-
 #[derive(PartialEq, Debug, Clone)]
 struct Link<'a> {
     start_index: usize,
     end_index: usize,
-    link_type: LinkType<'a>,
+    link_type: LinkType,
     link_text: &'a str,
 }
 
 impl<'a> Link<'a> {
     fn from_capture(cap: Captures<'a>) -> Option<Link<'a>> {
         let link_type = match (cap.get(0), cap.get(1), cap.get(2)) {
-            (_, Some(typ), Some(title)) if typ.as_str() == "title" => {
-                Some(LinkType::Title(title.as_str()))
-            }
             (_, Some(typ), Some(rest)) => {
                 let mut path_props = rest.as_str().split_whitespace();
                 let file_arg = path_props.next();
-                let props: Vec<&str> = path_props.collect();
 
                 match (typ.as_str(), file_arg) {
                     ("include", Some(pth)) => Some(parse_include_path(pth)),
-                    ("playground", Some(pth)) => Some(LinkType::Playground(pth.into(), props)),
-                    ("playpen", Some(pth)) => {
-                        warn!(
-                            "the {{{{#playpen}}}} expression has been \
-                            renamed to {{{{#playground}}}}, \
-                            please update your book to use the new name"
-                        );
-                        Some(LinkType::Playground(pth.into(), props))
-                    }
-                    ("rustdoc_include", Some(pth)) => Some(parse_rustdoc_include_path(pth)),
                     _ => None,
                 }
             }
@@ -363,11 +317,7 @@ impl<'a> Link<'a> {
         })
     }
 
-    fn render_with_path<P: AsRef<Path>>(
-        &self,
-        base: P,
-        chapter_title: &mut String,
-    ) -> Result<String> {
+    fn render_with_path<P: AsRef<Path>>(&self, base: P) -> Result<String> {
         let base = base.as_ref();
         match self.link_type {
             // omit the escape char
@@ -387,51 +337,6 @@ impl<'a> Link<'a> {
                             target.display(),
                         )
                     })
-            }
-            LinkType::RustdocInclude(ref pat, ref range_or_anchor) => {
-                let target = base.join(pat);
-
-                fs::read_to_string(&target)
-                    .map(|s| match range_or_anchor {
-                        RangeOrAnchor::Range(range) => {
-                            take_rustdoc_include_lines(&s, range.clone())
-                        }
-                        RangeOrAnchor::Anchor(anchor) => {
-                            take_rustdoc_include_anchored_lines(&s, anchor)
-                        }
-                    })
-                    .with_context(|| {
-                        format!(
-                            "Could not read file for link {} ({})",
-                            self.link_text,
-                            target.display(),
-                        )
-                    })
-            }
-            LinkType::Playground(ref pat, ref attrs) => {
-                let target = base.join(pat);
-
-                let mut contents = fs::read_to_string(&target).with_context(|| {
-                    format!(
-                        "Could not read file for link {} ({})",
-                        self.link_text,
-                        target.display()
-                    )
-                })?;
-                let ftype = if !attrs.is_empty() { "rust," } else { "rust" };
-                if !contents.ends_with('\n') {
-                    contents.push('\n');
-                }
-                Ok(format!(
-                    "```{}{}\n{}```\n",
-                    ftype,
-                    attrs.join(","),
-                    contents
-                ))
-            }
-            LinkType::Title(title) => {
-                *chapter_title = title.to_owned();
-                Ok(String::new())
             }
         }
     }
@@ -487,21 +392,7 @@ mod tests {
         ```hbs
         {{#include file.rs}} << an escaped link!
         ```";
-        let mut chapter_title = "test_replace_all_escaped".to_owned();
-        assert_eq!(replace_all(start, "", "", 0, &mut chapter_title), end);
-    }
-
-    #[test]
-    fn test_set_chapter_title() {
-        let start = r"{{#title My Title}}
-        # My Chapter
-        ";
-        let end = r"
-        # My Chapter
-        ";
-        let mut chapter_title = "test_set_chapter_title".to_owned();
-        assert_eq!(replace_all(start, "", "", 0, &mut chapter_title), end);
-        assert_eq!(chapter_title, "My Title");
+        assert_eq!(replace_all(start, "", "", 0), end);
     }
 
     #[test]
@@ -530,50 +421,6 @@ mod tests {
     fn test_find_links_unknown_link_type() {
         let s = "Some random text with {{#playgroundz ar.rs}} and {{#incn}} {{baz}} {{#bar}}...";
         assert!(find_links(s).collect::<Vec<_>>() == vec![]);
-    }
-
-    #[test]
-    fn test_find_links_simple_link() {
-        let s = "Some random text with {{#playground file.rs}} and {{#playground test.rs }}...";
-
-        let res = find_links(s).collect::<Vec<_>>();
-        println!("\nOUTPUT: {:?}\n", res);
-
-        assert_eq!(
-            res,
-            vec![
-                Link {
-                    start_index: 22,
-                    end_index: 45,
-                    link_type: LinkType::Playground(PathBuf::from("file.rs"), vec![]),
-                    link_text: "{{#playground file.rs}}",
-                },
-                Link {
-                    start_index: 50,
-                    end_index: 74,
-                    link_type: LinkType::Playground(PathBuf::from("test.rs"), vec![]),
-                    link_text: "{{#playground test.rs }}",
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_find_links_with_special_characters() {
-        let s = "Some random text with {{#playground foo-bar\\baz/_c++.rs}}...";
-
-        let res = find_links(s).collect::<Vec<_>>();
-        println!("\nOUTPUT: {:?}\n", res);
-
-        assert_eq!(
-            res,
-            vec![Link {
-                start_index: 22,
-                end_index: 57,
-                link_type: LinkType::Playground(PathBuf::from("foo-bar\\baz/_c++.rs"), vec![]),
-                link_text: "{{#playground foo-bar\\baz/_c++.rs}}",
-            },]
-        );
     }
 
     #[test]
@@ -724,81 +571,6 @@ mod tests {
                 link_type: LinkType::Escaped,
                 link_text: "\\{{#playground file.rs editable}}",
             }]
-        );
-    }
-
-    #[test]
-    fn test_find_playgrounds_with_properties() {
-        let s =
-            "Some random text with escaped playground {{#playground file.rs editable }} and some \
-                 more\n text {{#playground my.rs editable no_run should_panic}} ...";
-
-        let res = find_links(s).collect::<Vec<_>>();
-        println!("\nOUTPUT: {:?}\n", res);
-        assert_eq!(
-            res,
-            vec![
-                Link {
-                    start_index: 41,
-                    end_index: 74,
-                    link_type: LinkType::Playground(PathBuf::from("file.rs"), vec!["editable"]),
-                    link_text: "{{#playground file.rs editable }}",
-                },
-                Link {
-                    start_index: 95,
-                    end_index: 145,
-                    link_type: LinkType::Playground(
-                        PathBuf::from("my.rs"),
-                        vec!["editable", "no_run", "should_panic"],
-                    ),
-                    link_text: "{{#playground my.rs editable no_run should_panic}}",
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_find_all_link_types() {
-        let s =
-            "Some random text with escaped playground {{#include file.rs}} and \\{{#contents are \
-                 insignifficant in escaped link}} some more\n text  {{#playground my.rs editable \
-                 no_run should_panic}} ...";
-
-        let res = find_links(s).collect::<Vec<_>>();
-        println!("\nOUTPUT: {:?}\n", res);
-        assert_eq!(res.len(), 3);
-        assert_eq!(
-            res[0],
-            Link {
-                start_index: 41,
-                end_index: 61,
-                link_type: LinkType::Include(
-                    PathBuf::from("file.rs"),
-                    RangeOrAnchor::Range(LineRange::from(..))
-                ),
-                link_text: "{{#include file.rs}}",
-            }
-        );
-        assert_eq!(
-            res[1],
-            Link {
-                start_index: 66,
-                end_index: 115,
-                link_type: LinkType::Escaped,
-                link_text: "\\{{#contents are insignifficant in escaped link}}",
-            }
-        );
-        assert_eq!(
-            res[2],
-            Link {
-                start_index: 133,
-                end_index: 183,
-                link_type: LinkType::Playground(
-                    PathBuf::from("my.rs"),
-                    vec!["editable", "no_run", "should_panic"]
-                ),
-                link_text: "{{#playground my.rs editable no_run should_panic}}",
-            }
         );
     }
 
