@@ -5,10 +5,10 @@
 use anyhow::Context;
 use clap::{Arg, Command};
 use log::{error, warn};
-use mdbook::{
+use mdbook_preprocessor::{
     book::{Book, BookItem},
     errors::{Error, Result},
-    preprocess::{CmdPreprocessor, Preprocessor, PreprocessorContext},
+    Preprocessor, PreprocessorContext, MDBOOK_VERSION,
 };
 use regex::{CaptureMatches, Captures, Regex};
 use std::{
@@ -50,7 +50,7 @@ fn main() -> Result<(), Error> {
             process::exit(1);
         }
     } else {
-        let (ctx, book) = CmdPreprocessor::parse_input(io::stdin())?;
+        let (ctx, book) = mdbook_preprocessor::parse_input(io::stdin())?;
         let pre = ShiftInclude::new(&ctx);
 
         let processed_book = pre.run(&ctx, book)?;
@@ -67,14 +67,13 @@ impl ShiftInclude {
     const NAME: &'static str = "shiftinclude";
 
     fn new(ctx: &PreprocessorContext) -> Self {
-        if ctx.mdbook_version != mdbook::MDBOOK_VERSION {
+        if ctx.mdbook_version != MDBOOK_VERSION {
             // We should probably use the `semver` crate to check compatibility
             // here...
             warn!(
-                "The {} plugin was built against version {} of mdbook, \
+                "The {} plugin was built against version {MDBOOK_VERSION} of mdbook, \
              but we're being called from version {}",
                 Self::NAME,
-                mdbook::MDBOOK_VERSION,
                 ctx.mdbook_version
             );
         }
