@@ -3,7 +3,7 @@
 //! Based on the links preprocessor in the main mdBook project.
 
 use anyhow::Context;
-use clap::{App, Arg, SubCommand};
+use clap::{Arg, Command};
 use log::{error, warn};
 use mdbook::{
     book::{Book, BookItem},
@@ -28,17 +28,19 @@ const MAX_LINK_NESTED_DEPTH: usize = 10;
 
 fn main() -> Result<(), Error> {
     env_logger::init();
-    let app = App::new(ShiftInclude::NAME)
+    let app = Command::new(ShiftInclude::NAME)
         .about("An mdbook preprocessor which includes files with shift")
         .subcommand(
-            SubCommand::with_name("supports")
-                .arg(Arg::with_name("renderer").required(true))
+            Command::new("supports")
+                .arg(Arg::new("renderer").required(true))
                 .about("Check whether a renderer is supported by this preprocessor"),
         );
     let matches = app.get_matches();
 
     if let Some(sub_args) = matches.subcommand_matches("supports") {
-        let renderer = sub_args.value_of("renderer").expect("Required argument");
+        let renderer = sub_args
+            .get_one::<String>("renderer")
+            .expect("Required argument");
         let supported = ShiftInclude::supports_renderer(renderer);
 
         // Signal whether the renderer is supported by exiting with 1 or 0.
