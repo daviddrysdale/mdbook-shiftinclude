@@ -1156,7 +1156,6 @@ dependencies = [
  "env_logger",
  "log",
  "mdbook",
- "once_cell",
  "regex",
  "serde_json",
 ]
