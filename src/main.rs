@@ -10,7 +10,6 @@ use mdbook::{
     errors::{Error, Result},
     preprocess::{CmdPreprocessor, Preprocessor, PreprocessorContext},
 };
-use once_cell::sync::Lazy;
 use regex::{CaptureMatches, Captures, Regex};
 use std::{
     cmp::Ordering,
@@ -18,6 +17,7 @@ use std::{
     ops::{Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeTo},
     path::{Path, PathBuf},
     process,
+    sync::LazyLock,
 };
 
 mod string;
@@ -376,12 +376,11 @@ impl<'a> Iterator for LinkIter<'a> {
     }
 }
 
-fn find_links(contents: &str) -> LinkIter<'_> {
-    // lazily compute following regex
-    // r"\\\{\{#.*\}\}|\{\{#([a-zA-Z0-9]+)\s*([^}]+)\}\}")?;
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?x)              # insignificant whitespace mode
+// lazily compute following regex
+// r"\\\{\{#.*\}\}|\{\{#([a-zA-Z0-9]+)\s*([^}]+)\}\}")?;
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)              # insignificant whitespace mode
         \\\{\{\#.*\}\}      # match escaped link
         |                   # or
         \{\{\s*             # link opening parens and whitespace
@@ -389,11 +388,12 @@ fn find_links(contents: &str) -> LinkIter<'_> {
         \s+                 # separating whitespace
         ([^}]+)             # link target path and space separated properties
         \}\}                # link closing parens",
-        )
-        .unwrap()
-    });
+    )
+    .unwrap()
+});
 
-    LinkIter(RE.captures_iter(contents))
+fn find_links(contents: &str) -> LinkIter<'_> {
+    LinkIter(LINK_RE.captures_iter(contents))
 }
 
 #[cfg(test)]

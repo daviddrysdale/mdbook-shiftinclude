@@ -1,8 +1,8 @@
-use once_cell::sync::Lazy;
 use regex::Regex;
 use std::borrow::Cow;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
+use std::sync::LazyLock;
 
 /// Indication of whether to shift included text.
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
@@ -98,10 +98,10 @@ pub fn take_lines_with_shift<R: RangeBounds<usize>>(s: &str, range: R, shift: Sh
     shift_lines(&retained, shift).join("\n")
 }
 
-static ANCHOR_START: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"ANCHOR:\s*(?P<anchor_name>[\w_-]+)").unwrap());
-static ANCHOR_END: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"ANCHOR_END:\s*(?P<anchor_name>[\w_-]+)").unwrap());
+static ANCHOR_START: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"ANCHOR:\s*(?P<anchor_name>[\w_-]+)").unwrap());
+static ANCHOR_END: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"ANCHOR_END:\s*(?P<anchor_name>[\w_-]+)").unwrap());
 
 /// Take anchored lines from a string, shifting all lines left or right.
 /// Lines containing anchor are ignored.
