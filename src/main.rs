@@ -3,14 +3,13 @@
 //! Based on the links preprocessor in the main mdBook project.
 
 use anyhow::Context;
-use clap::{App, Arg, SubCommand};
+use clap::{Arg, Command};
 use log::{error, warn};
-use mdbook::{
+use mdbook_preprocessor::{
     book::{Book, BookItem},
     errors::{Error, Result},
-    preprocess::{CmdPreprocessor, Preprocessor, PreprocessorContext},
+    Preprocessor, PreprocessorContext, MDBOOK_VERSION,
 };
-use once_cell::sync::Lazy;
 use regex::{CaptureMatches, Captures, Regex};
 use std::{
     cmp::Ordering,
@@ -18,6 +17,7 @@ use std::{
     ops::{Bound, Range, RangeBounds, RangeFrom, RangeFull, RangeTo},
     path::{Path, PathBuf},
     process,
+    sync::LazyLock,
 };
 
 mod string;
@@ -28,17 +28,19 @@ const MAX_LINK_NESTED_DEPTH: usize = 10;
 
 fn main() -> Result<(), Error> {
     env_logger::init();
-    let app = App::new(ShiftInclude::NAME)
+    let app = Command::new(ShiftInclude::NAME)
         .about("An mdbook preprocessor which includes files with shift")
         .subcommand(
-            SubCommand::with_name("supports")
-                .arg(Arg::with_name("renderer").required(true))
+            Command::new("supports")
+                .arg(Arg::new("renderer").required(true))
                 .about("Check whether a renderer is supported by this preprocessor"),
         );
     let matches = app.get_matches();
 
     if let Some(sub_args) = matches.subcommand_matches("supports") {
-        let renderer = sub_args.value_of("renderer").expect("Required argument");
+        let renderer = sub_args
+            .get_one::<String>("renderer")
+            .expect("Required argument");
         let supported = ShiftInclude::supports_renderer(renderer);
 
         // Signal whether the renderer is supported by exiting with 1 or 0.
@@ -48,7 +50,7 @@ fn main() -> Result<(), Error> {
             process::exit(1);
         }
     } else {
-        let (ctx, book) = CmdPreprocessor::parse_input(io::stdin())?;
+        let (ctx, book) = mdbook_preprocessor::parse_input(io::stdin())?;
         let pre = ShiftInclude::new(&ctx);
 
         let processed_book = pre.run(&ctx, book)?;
@@ -65,14 +67,13 @@ impl ShiftInclude {
     const NAME: &'static str = "shiftinclude";
 
     fn new(ctx: &PreprocessorContext) -> Self {
-        if ctx.mdbook_version != mdbook::MDBOOK_VERSION {
+        if ctx.mdbook_version != MDBOOK_VERSION {
             // We should probably use the `semver` crate to check compatibility
             // here...
             warn!(
-                "The {} plugin was built against version {} of mdbook, \
+                "The {} plugin was built against version {MDBOOK_VERSION} of mdbook, \
              but we're being called from version {}",
                 Self::NAME,
-                mdbook::MDBOOK_VERSION,
                 ctx.mdbook_version
             );
         }
@@ -376,12 +377,11 @@ impl<'a> Iterator for LinkIter<'a> {
     }
 }
 
-fn find_links(contents: &str) -> LinkIter<'_> {
-    // lazily compute following regex
-    // r"\\\{\{#.*\}\}|\{\{#([a-zA-Z0-9]+)\s*([^}]+)\}\}")?;
-    static RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(
-            r"(?x)              # insignificant whitespace mode
+// lazily compute following regex
+// r"\\\{\{#.*\}\}|\{\{#([a-zA-Z0-9]+)\s*([^}]+)\}\}")?;
+static LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?x)              # insignificant whitespace mode
         \\\{\{\#.*\}\}      # match escaped link
         |                   # or
         \{\{\s*             # link opening parens and whitespace
@@ -389,11 +389,12 @@ fn find_links(contents: &str) -> LinkIter<'_> {
         \s+                 # separating whitespace
         ([^}]+)             # link target path and space separated properties
         \}\}                # link closing parens",
-        )
-        .unwrap()
-    });
+    )
+    .unwrap()
+});
 
-    LinkIter(RE.captures_iter(contents))
+fn find_links(contents: &str) -> LinkIter<'_> {
+    LinkIter(LINK_RE.captures_iter(contents))
 }
 
 #[cfg(test)]
