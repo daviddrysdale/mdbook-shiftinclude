@@ -10,7 +10,7 @@ keywords = ["mdbook", "preprocessor"]
 categories = ["text-processing"]
 
 [dependencies]
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 clap = "4.5"
 env_logger = "^0.11.9"
 log = "^0.4.29"
